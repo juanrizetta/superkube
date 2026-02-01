@@ -1,0 +1,40 @@
+---
+- name: Destroy local Kubernetes cluster
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars:
+    cluster_name: superkube
+
+  tasks:
+    - name: Check if kind is installed
+      command: kind version
+      register: kind_check
+      ignore_errors: yes
+
+    - name: Fail if kind is not installed
+      fail:
+        msg: "kind is not installed. Nothing to destroy."
+      when: kind_check.rc != 0
+
+    - name: Check if kind cluster exists
+      command: kind get clusters
+      register: kind_clusters
+
+    - name: Display existing clusters
+      debug:
+        msg: "Existing clusters: {{ kind_clusters.stdout_lines }}"
+
+    - name: Delete kind cluster
+      command: kind delete cluster --name {{ cluster_name }}
+      when: cluster_name in kind_clusters.stdout
+
+    - name: Confirm deletion
+      debug:
+        msg: "Cluster {{ cluster_name }} has been deleted."
+      when: cluster_name in kind_clusters.stdout
+
+    - name: No cluster to delete
+      debug:
+        msg: "Cluster {{ cluster_name }} does not exist."
+      when: cluster_name not in kind_clusters.stdout

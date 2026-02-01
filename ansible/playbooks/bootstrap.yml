@@ -1,0 +1,161 @@
+---
+- name: Bootstrap local Kubernetes cluster with kind and Flux
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  vars:
+    cluster_name: superkube
+    kind_config_path: "{{ playbook_dir }}/../../kind/kind-config.yaml"
+    flux_github_owner: juanrizetta
+    flux_github_repo: superkube
+    flux_github_branch: main
+    flux_path: clusters/dev
+    github_token: "{{ lookup('env', 'GITHUB_TOKEN') }}"
+
+  tasks:
+    - name: Check if Docker is installed
+      command: docker --version
+      register: docker_check
+      ignore_errors: yes
+
+    - name: Display Docker status
+      debug:
+        msg: "Docker is {{ 'installed' if docker_check.rc == 0 else 'NOT installed' }}"
+
+    - name: Fail if Docker is not installed
+      fail:
+        msg: "Docker is not installed. Please install Docker first: https://docs.docker.com/engine/install/"
+      when: docker_check.rc != 0
+
+    - name: Check if kubectl is installed
+      command: kubectl version --client --output=yaml
+      register: kubectl_check
+      ignore_errors: yes
+
+    - name: Install kubectl if not present
+      become: yes
+      block:
+        - name: Download kubectl
+          get_url:
+            url: "https://dl.k8s.io/release/{{ kubectl_version | default('v1.28.0') }}/bin/linux/amd64/kubectl"
+            dest: /usr/local/bin/kubectl
+            mode: '0755'
+      when: kubectl_check.rc != 0
+
+    - name: Check if kind is installed
+      command: kind version
+      register: kind_check
+      ignore_errors: yes
+
+    - name: Install kind if not present
+      become: yes
+      block:
+        - name: Download kind
+          get_url:
+            url: "https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64"
+            dest: /usr/local/bin/kind
+            mode: '0755'
+      when: kind_check.rc != 0
+
+    - name: Check if flux CLI is installed
+      command: flux version --client
+      register: flux_check
+      ignore_errors: yes
+
+    - name: Install flux CLI if not present
+      become: yes
+      block:
+        - name: Download flux CLI installation script
+          get_url:
+            url: https://fluxcd.io/install.sh
+            dest: /tmp/flux-install.sh
+            mode: '0755'
+
+        - name: Install flux CLI
+          shell: /tmp/flux-install.sh
+          environment:
+            FLUX_VERSION: "2.2.0"
+      when: flux_check.rc != 0
+
+    - name: Check if helm is installed
+      command: helm version
+      register: helm_check
+      ignore_errors: yes
+
+    - name: Install helm if not present
+      become: yes
+      block:
+        - name: Download helm installation script
+          get_url:
+            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            dest: /tmp/get-helm-3.sh
+            mode: '0755'
+
+        - name: Install helm
+          shell: /tmp/get-helm-3.sh
+      when: helm_check.rc != 0
+
+    - name: Check if kind cluster already exists
+      command: kind get clusters
+      register: kind_clusters
+
+    - name: Display existing clusters
+      debug:
+        msg: "Existing clusters: {{ kind_clusters.stdout_lines }}"
+
+    - name: Create kind cluster
+      command: >
+        kind create cluster
+        --name {{ cluster_name }}
+        --config {{ kind_config_path }}
+      when: cluster_name not in kind_clusters.stdout
+
+    - name: Wait for cluster to be ready
+      command: kubectl cluster-info --context kind-{{ cluster_name }}
+      register: cluster_info
+      until: cluster_info.rc == 0
+      retries: 10
+      delay: 5
+
+    - name: Display cluster info
+      debug:
+        msg: "{{ cluster_info.stdout }}"
+
+    - name: Check if GITHUB_TOKEN is set
+      fail:
+        msg: "GITHUB_TOKEN environment variable is not set. Please export GITHUB_TOKEN with your GitHub personal access token."
+      when: github_token == ""
+
+    - name: Check if Flux is already bootstrapped
+      command: kubectl get namespace flux-system
+      register: flux_namespace
+      ignore_errors: yes
+
+    - name: Bootstrap Flux
+      command: >
+        flux bootstrap github
+        --owner={{ flux_github_owner }}
+        --repository={{ flux_github_repo }}
+        --branch={{ flux_github_branch }}
+        --path={{ flux_path }}
+        --personal
+        --token-auth
+      environment:
+        GITHUB_TOKEN: "{{ github_token }}"
+      when: flux_namespace.rc != 0
+
+    - name: Wait for Flux to be ready
+      command: kubectl wait --for=condition=ready --timeout=300s --all pods -n flux-system
+      register: flux_ready
+      until: flux_ready.rc == 0
+      retries: 5
+      delay: 10
+
+    - name: Display bootstrap completion message
+      debug:
+        msg:
+          - "Bootstrap completed successfully!"
+          - "Cluster: {{ cluster_name }}"
+          - "Flux is reconciling from: {{ flux_github_owner }}/{{ flux_github_repo }}/{{ flux_path }}"
+          - "Use 'kubectl get kustomizations -A' to check Flux status"
+          - "Use 'kubectl get helmreleases -A' to check Helm releases"

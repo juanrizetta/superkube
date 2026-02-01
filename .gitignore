@@ -1,0 +1,22 @@
+# Temporary files
+*.tmp
+*.log
+*.swp
+*.swo
+*~
+
+# Ansible
+*.retry
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
